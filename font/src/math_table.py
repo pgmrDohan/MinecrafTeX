@@ -10,8 +10,9 @@ from __future__ import annotations
 from fontTools.ttLib import TTFont, newTable
 from fontTools.ttLib.tables import otTables as ot
 
-from pixelfont import PIXEL, AXIS_HEIGHT, CAP_HEIGHT
-from math_glyphs import MATH_CONSTRUCTIONS, ITALIC_CORRECTIONS, MATH_KERNS
+from pixelfont import PIXEL, AXIS_HEIGHT, CAP_HEIGHT, X_HEIGHT
+from math_glyphs import (MATH_CONSTRUCTIONS, MATH_HORIZ_CONSTRUCTIONS,
+                         ITALIC_CORRECTIONS, MATH_KERNS)
 
 
 def _mv(value: int) -> ot.MathValueRecord:
@@ -26,7 +27,9 @@ def _mv(value: int) -> ot.MathValueRecord:
 _CONSTANTS = {
     "MathLeading": 1 * PIXEL,
     "AxisHeight": AXIS_HEIGHT,
-    "AccentBaseHeight": CAP_HEIGHT,
+    # Accents sit 1 px above x-height letters, the same gap as over capitals;
+    # at cap height they floated three pixels above every lowercase letter.
+    "AccentBaseHeight": X_HEIGHT,
     "FlattenedAccentBaseHeight": CAP_HEIGHT,
     "SubscriptShiftDown": 1 * PIXEL,
     "SubscriptTopMax": 4 * PIXEL,
@@ -116,9 +119,12 @@ def _part_record(glyph_name: str, start: int, end: int,
     return rec
 
 
-def _make_construction(con, base_name: str) -> ot.MathGlyphConstruction:
+def _make_construction(con, base_name: str,
+                       base_advance: int) -> ot.MathGlyphConstruction:
     gc = ot.MathGlyphConstruction()
-    variants = [(base_name, con.base_advance)] + con.variants[1:]
+    # Variants must grow; skip pre-drawn sizes that a wider base already covers.
+    variants = [(base_name, base_advance)] + [
+        v for v in con.variants[1:] if v[1] > base_advance]
     gc.VariantCount = len(variants)
     gc.MathGlyphVariantRecord = [_variant_record(n, a) for n, a in variants]
     if con.parts:
@@ -132,33 +138,42 @@ def _make_construction(con, base_name: str) -> ot.MathGlyphConstruction:
     return gc
 
 
-def _make_variants(font: TTFont) -> ot.MathVariants:
-    """Build MathVariants from MATH_CONSTRUCTIONS, aligned to glyph-ID order."""
+def _resolve(font: TTFont, constructions, horizontal: bool):
+    """(coverage, constructions) for one direction, aligned to glyph-ID order."""
     cmap = font.getBestCmap()
     gid = {name: i for i, name in enumerate(font.getGlyphOrder())}
+    hmtx = font["hmtx"]
 
     resolved = []  # (gid, base_name, construction)
-    for con in MATH_CONSTRUCTIONS:
+    for con in constructions:
         base_name = cmap.get(con.codepoint, con.base_name)
         if base_name is None or base_name not in gid:
             continue
         resolved.append((gid[base_name], base_name, con))
     resolved.sort(key=lambda t: t[0])  # coverage MUST be in GID order
 
-    mv = ot.MathVariants()
-    mv.MinConnectorOverlap = 0  # parts abut on whole-pixel boundaries
     cov = ot.Coverage()
     cov.glyphs = [base_name for _, base_name, _ in resolved]
-    mv.VertGlyphCoverage = cov
-    mv.VertGlyphCount = len(resolved)
-    mv.VertGlyphConstruction = [
-        _make_construction(con, base_name) for _, base_name, con in resolved
+    # A horizontal base is measured by its advance width, which depends on the
+    # mono/proportional build, so it is read back from the font.
+    built = [
+        _make_construction(con, base_name,
+                           hmtx[base_name][0] if horizontal else con.base_advance)
+        for _, base_name, con in resolved
     ]
-    horiz = ot.Coverage()
-    horiz.glyphs = []
-    mv.HorizGlyphCoverage = horiz
-    mv.HorizGlyphCount = 0
-    mv.HorizGlyphConstruction = []
+    return cov, built
+
+
+def _make_variants(font: TTFont) -> ot.MathVariants:
+    """Build MathVariants from the vertical and horizontal constructions."""
+    mv = ot.MathVariants()
+    mv.MinConnectorOverlap = 0  # parts abut on whole-pixel boundaries
+    mv.VertGlyphCoverage, mv.VertGlyphConstruction = _resolve(
+        font, MATH_CONSTRUCTIONS, horizontal=False)
+    mv.VertGlyphCount = len(mv.VertGlyphConstruction)
+    mv.HorizGlyphCoverage, mv.HorizGlyphConstruction = _resolve(
+        font, MATH_HORIZ_CONSTRUCTIONS, horizontal=True)
+    mv.HorizGlyphCount = len(mv.HorizGlyphConstruction)
     return mv
 
 
@@ -218,6 +233,29 @@ def _make_glyph_info(font: TTFont) -> ot.MathGlyphInfo | None:
     info.ExtendedShapeCoverage = None
     info.MathKernInfo = kern_info
     return info
+
+
+# Accent/stretchy codepoints that Unicode classifies as combining marks. A font
+# without GDEF lets the shaper classify glyphs by Unicode category, and it zeroes
+# a mark's advance -- so a lone <mo>⃗</mo> has no width and the math engine
+# centres it as if it were a point, pushing \vec, \dddot, \widehat and \overline
+# left of their base.
+_SPACING_MATH_MARKS = (0x0302, 0x0332, 0x20D7, 0x20DB)
+
+
+def add_glyph_classes(font: TTFont) -> None:
+    """GDEF marking the math accents above as base glyphs so they keep their width."""
+    cmap = font.getBestCmap()
+    gdef = newTable("GDEF")
+    gdef.table = ot.GDEF()
+    gdef.table.Version = 0x00010000
+    class_def = ot.GlyphClassDef()
+    class_def.classDefs = {cmap[cp]: 1 for cp in _SPACING_MATH_MARKS if cp in cmap}
+    gdef.table.GlyphClassDef = class_def
+    gdef.table.AttachList = None
+    gdef.table.LigCaretList = None
+    gdef.table.MarkAttachClassDef = None
+    font["GDEF"] = gdef
 
 
 def add_math_table(font: TTFont) -> None:

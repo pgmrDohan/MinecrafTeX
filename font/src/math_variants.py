@@ -18,8 +18,11 @@ GREEK_CAP_ORDER = (
     list(range(0x391, 0x3A2)) + [0x398] + list(range(0x3A3, 0x3AA)) + [0x2207]
 )
 GREEK_SMALL_ORDER = (
-    list(range(0x3B1, 0x3CA)) + [0x2202, 0x3B5, 0x3B8, 0x3BA, 0x3C6, 0x3C1, 0x3C0]
+    list(range(0x3B1, 0x3CA)) + [0x2202, 0x3F5, 0x3D1, 0x3F0, 0x3D5, 0x3F1, 0x3D6]
 )
+# Symbol variants fall back to the plain letter if a build lacks their glyph.
+_GREEK_FALLBACK = {0x3F5: 0x3B5, 0x3D1: 0x3B8, 0x3F0: 0x3BA, 0x3D5: 0x3C6,
+                   0x3F1: 0x3C1, 0x3D6: 0x3C0}
 
 STYLE_PLANES = [
     ("bold", 0x1D400, 0x1D41A, 0x1D6A8, 0x1D6C2, 0x1D7CE, 0.2, 0.0),
@@ -49,7 +52,7 @@ def styled_math_glyphs(glyph_by_cp: dict[int, Glyph]) -> list[Glyph]:
             slant_degrees: float) -> None:
         if cp in seen:
             return
-        base = glyph_by_cp.get(base_cp)
+        base = glyph_by_cp.get(base_cp) or glyph_by_cp.get(_GREEK_FALLBACK.get(base_cp))
         if base is None:
             return
         out.append(_copy_glyph(

@@ -11,15 +11,17 @@ from __future__ import annotations
 
 import os
 import sys
+from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from pixelfont import FontSpec, build_font, save  # noqa: E402
 from monocraft_loader import load_base_glyphs  # noqa: E402
 from math_glyphs import math_extra_glyphs  # noqa: E402
+from math_symbols import symbol_glyphs  # noqa: E402
 from math_alphanum import alphanumeric_aliases  # noqa: E402
 from math_variants import styled_math_glyphs  # noqa: E402
-from math_table import add_math_table  # noqa: E402
+from math_table import add_glyph_classes, add_math_table  # noqa: E402
 from gsub import add_math_script  # noqa: E402
 
 DIST = os.path.join(os.path.dirname(__file__), "dist")
@@ -50,11 +52,21 @@ _SYMBOL_ALIASES = {
     0x27F6: 0x2192,  # long rightwards arrow        -> rightwards arrow
     0x27F5: 0x2190,  # long leftwards arrow         -> leftwards arrow
     0x27F7: 0x2194,  # long left-right arrow        -> left-right arrow
+    0x27FC: 0x21A6,  # long rightwards arrow from bar -> rightwards arrow from bar
+    0x27C2: 0x22A5,  # perpendicular                -> up tack
+    0x2223: 0x007C,  # divides (\mid)               -> vertical line
+    0x2A7D: 0x2264,  # less-than or slanted equal   -> less-than or equal
+    0x2A7E: 0x2265,  # greater-than or slanted equal -> greater-than or equal
+    0x1D6A4: 0x0131,  # math italic dotless i (\imath) -> dotless i
+    0x1D6A5: 0x0237,  # math italic dotless j (\jmath) -> dotless j
 }
 
 
 def collect_glyphs(proportional: bool = False):
     base = load_base_glyphs(proportional=proportional)
+    # Fill Monocraft's gaps (accents, operators, delimiters, Greek variants)
+    # before the delimiter drop below, so new delimiters get it too.
+    base += symbol_glyphs({g.codepoint: g for g in base}, proportional=proportional)
     # Drop the common delimiters 1 px so they centre on x-height content.
     for g in base:
         if g.codepoint in _DELIMITER_DROP_CODEPOINTS:
@@ -75,6 +87,8 @@ def collect_glyphs(proportional: bool = False):
         glyphs.append(g)
         if g.codepoint is not None:
             taken.add(g.codepoint)
+    dupes = [n for n, c in Counter(g.name for g in glyphs).items() if c > 1]
+    assert not dupes, f"duplicate glyph names: {dupes}"
     return glyphs
 
 
@@ -106,6 +120,8 @@ def build_one(filename: str, family: str, proportional: bool,
     font = build_font(spec)
     add_math_table(font)
     add_math_script(font, anchor_glyph="space")
+    # After the feature build: feaLib regenerates (and here drops) GDEF.
+    add_glyph_classes(font)
     print(f"{filename}: glyphs: {len(glyphs)}  alphanumeric aliases: {len(aliases)}")
 
     ttf_path = os.path.join(DIST, filename)
